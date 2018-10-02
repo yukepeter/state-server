@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+
+import json
+import sys
+
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+def read_json_file():
+    state_list = []
+    try:
+        with open('states.json', 'r') as f:
+            for line in f.readlines():
+                state = json.loads(line)
+                state_list.append(state)
+        return state_list
+    except IOError as e:
+        print ("Fail loading state.json")
+
+class StateServer(BaseHTTPRequestHandler):
+    """State Server
+    An simple implement of state server which only process POST request with specific format. 
+    Expected Behavior
+      $ ./state-server &
+      [1] 21507
+      $ curl  -d "longitude=-77.036133&latitude=40.513799" http://localhost:8080/
+      ["Pennsylvania"]
+    """
+    STATES_LIST = read_json_file()
+
+    def get_cordinate(self, post_data):
+        try:
+            coordinate = {i.split("=")[0]: float(i.split("=")[1]) for i in post_data.split('&')}
+            return coordinate
+        except Exception as e:
+            self.send_error(404)
+            raise ValueError("Invalid input format!")
+    
+    def get_state(self, coordinate, states_list):
+        for state_dict in states_list:
+            point = [coordinate.get('longitude'), coordinate.get('latitude')]
+            polygon = state_dict['border']
+            if self.is_in_polygon(polygon, point):
+                return state_dict['state']
+        return "Not in the States"
+
+    def is_on_segment(self, segment, point):
+        [[x1, y1], [x2, y2]] = segment
+        x, y = point
+        cross_product = (y - y1) * (x2 - x1) - (x - x1) * (y2 - y1)
+        if abs(cross_product) <= 1e-9 and min(y1, y2) <= y <= max(y1, y2) and min(x1, x2) <= x <= max(x1, x2):
+            return True
+        return False
+
+    def is_in_polygon(self, polygon, point):
+        """Check if a point is in or on the polygon.
+        :type polygon: list
+        :type: point: list
+        :rtype: is_inside: boolean
+        Args:
+            polygon: A list of [longitude, latitude] forming a polygon, 
+                    the last point should be same as the first one.
+            point: A pair of longitude, latitude represent the point
+        Returns:
+            is_inside: A boolean represent if point is in or on polygon.
+        Adapted format: https://rosettacode.org/wiki/Ray-casting_algorithm Credit to the website.
+        """
+        is_inside = False
+        [x, y] = point
+
+        if point in polygon:
+            return True
+        idx = 0
+        while idx < len(polygon) - 1:
+            edge = [[x1, y1],[x2, y2]] = [polygon[idx], polygon[idx + 1]]
+            if self.is_on_segment(edge, point):
+                return True
+            if min(y1,y2) < y <= max(y1,y2):
+                if x <= max(x1,x2):
+                    if abs(y1 - y2) > 1e-9:
+                        intersect = (y - y1) * (x2 - x1) / (y2 - y1) + x1
+                        if x1 == x2 or x <= intersect:
+                            is_inside = not is_inside
+            idx += 1
+        return is_inside
+
+    def do_POST(self):
+        try:
+            length = int(self.headers.get('Content-Length'))
+            post_data = self.rfile.read(length).decode('utf-8')
+            coordinate = self.get_cordinate(post_data)
+            result = self.get_state(coordinate, self.STATES_LIST)
+            self.wfile.write("[\"{}\"]\n".format(result).encode('utf-8'))
+            if result == "Not in the States":
+                self.send_response(404)
+            else:
+                self.send_response(200)
+        except ValueError as valueErr:
+            self.send_response(500)
+            self.wfile.write("Invalid input\n".encode('utf-8'))
+            print ("Value error: {}".format(valueErr))
+        except KeyError as keyErr:
+            self.send_response(500)
+            self.wfile.write("Invalid input\n".encode('utf-8'))
+            print ("Key error: {}".format(keyErr))
+        except TypeError as typeErr:
+            self.send_response(500)
+            self.wfile.write("Invalid input\n".encode('utf-8'))
+            print ("Type error: {}".format(typeErr))
+        except Exception as e:
+            self.send_response(500)
+            self.wfile.write("Server error\n".encode('utf-8'))
+            print ("Other Error: {}".format(e))
+            return
+
+def run(server_class=HTTPServer, handler_class=StateServer):
+    state_server = server_class(('127.0.0.1', 8080), handler_class)
+    try:
+        print ("Server Starts - {0}:{1} - use <Ctrl-C> to stop".format('127.0.0.1', 8080))
+        state_server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    state_server.server_close()
+    print ("Server Stops - {0}:{1}".format('127.0.0.1', 8080))
+
+if __name__ == '__main__':
+    run()
